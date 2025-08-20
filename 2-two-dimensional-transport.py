@@ -41,10 +41,10 @@ def get_operator_for_site(op, i, N):
     op_list[i] = op
     return qt.tensor(op_list)
 
-def build_hamiltonian(Nx, Ny, Omega, Delta, V_map):
+def build_hamiltonian(Nx, Ny, Omega, current_delta, V_map):
     """
     Builds the system Hamiltonian using QuTiP objects.
-    H = sum_j (Omega/2 * sigma_x_j - Delta * n_j) + sum_{i<j} V_ij * n_i * n_j
+    H = sum_j (Omega/2 * sigma_x_j - current_delta * n_j) + sum_{i<j} V_ij * n_i * n_j
     """
     H = 0
     N = Nx * Ny
@@ -52,7 +52,7 @@ def build_hamiltonian(Nx, Ny, Omega, Delta, V_map):
     # Driving term
     for i in range(N):
         H += 0.5 * Omega * get_operator_for_site(qt.sigmax(), i, N)
-        H -= Delta * get_operator_for_site(qt.num(2), i, N) #[Need to check]
+        H -= current_delta * get_operator_for_site(qt.num(2), i, N) # [Need to check]
 
     # Interaction term for nearest neighbors
     for i in range(N):
@@ -114,8 +114,8 @@ def run_simulation(Nx, Ny, params, pulse_sequence, initial_site=0):
     for direction, duration, steps in pbar:
         pbar.set_description(f"Pulse: {direction}")
         
-        Delta = params['V_map'][direction] + params.get('delta', 0)
-        H = build_hamiltonian(Nx, Ny, params['Omega'], Delta, params['V_map'])
+        current_delta = params['V_map'][direction] + params['delta_detuning_map'].get(direction, 0)
+        H = build_hamiltonian(Nx, Ny, params['Omega'], current_delta, params['V_map'])
         
         t_pulse = np.linspace(t_total, t_total + duration, steps + 1)
         
@@ -161,7 +161,7 @@ def plot_transport_dynamics(time_points, history, sites_to_plot, filename='trans
     ax.set_title('Excitation Transport Dynamics', fontsize=16)
     ax.legend(fontsize=12)
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-    ax.set_ylim(0, 1.05)
+    ax.set_ylim(-0.05, 1.05)
     ax.set_xlim(0, time_us[-1] if len(time_us) > 0 else 0)
 
     plt.tight_layout()
@@ -265,6 +265,10 @@ if __name__ == '__main__':
         'h1': C6 / r_h1**6, 'h2': C6 / r_h2**6,
         'v1': C6 / r_v1**6, 'v2': C6 / r_v2**6
     }
+    delta_detuning_map = {
+        'h1': -0.01 * Omega, 'h2': -0.25 * Omega,
+        'v1': -0 * Omega, 'v2': -0.2 * Omega
+    }
     
     pi_pulse_duration = np.pi / Omega_eff # Duration in seconds
     
@@ -274,7 +278,7 @@ if __name__ == '__main__':
         'V_map': V_map, 
         'Gamma_decay': Gamma_decay, 
         'Gamma_dephasing': Gamma_dephasing, 
-        'delta': -0.1 * Omega
+        'delta_detuning_map': delta_detuning_map
     }
 
     print("--- Simulation Parameters ---")
