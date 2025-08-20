@@ -39,12 +39,14 @@ def get_operator_for_site(op, i, N):
     """
     op_list = [qt.qeye(2)] * N
     op_list[i] = op
+
     return qt.tensor(op_list)
+    
 
 def build_hamiltonian(Nx, Ny, Omega, current_delta, V_map):
     """
     Builds the system Hamiltonian using QuTiP objects.
-    H = sum_j (Omega/2 * sigma_x_j - current_delta * n_j) + sum_{i<j} V_ij * n_i * n_j
+    H = sum_j (Omega/2 * sigma_x_j - current_delta * sigma_z_j) + sum_{i<j} V_ij * n_i * n_j
     """
     H = 0
     N = Nx * Ny
@@ -52,13 +54,13 @@ def build_hamiltonian(Nx, Ny, Omega, current_delta, V_map):
     # Driving term
     for i in range(N):
         H += 0.5 * Omega * get_operator_for_site(qt.sigmax(), i, N)
-        H -= current_delta * get_operator_for_site(qt.num(2), i, N) # [Need to check]
+        H -= current_delta * get_operator_for_site(n_op, i, N)
 
     # Interaction term for nearest neighbors
     for i in range(N):
         for j in range(i + 1, N):
             row_i, col_i = divmod(i, Nx)
-            row_j, col_j = divmod(j, Ny)
+            row_j, col_j = divmod(j, Nx)
 
             V_ij = 0
             # Horizontal neighbors
@@ -74,6 +76,22 @@ def build_hamiltonian(Nx, Ny, Omega, current_delta, V_map):
                 
     return H
 
+
+# Define the collapse operators (Lindblad master equation)
+def get_collapse_operators(N, Gamma_decay_val, Gamma_dephasing_val):
+    """
+    Build the collapse operators in the Lindblad master equation
+    """
+    c_ops = []
+    # Decay term L_decay(rho)
+    for k in range(N):
+        c_ops.append(np.sqrt(Gamma_decay_val) * get_operator_for_site(sm, k, N))
+
+    # Dephasing term L_deph(rho)
+    for k in range(N):
+        c_ops.append(np.sqrt(Gamma_dephasing_val) * get_operator_for_site(sz, k, N))
+    return c_ops
+
 # --- Part 3: QuTiP-based Simulation Execution ---
 
 def run_simulation(Nx, Ny, params, pulse_sequence, initial_site=0):
@@ -88,19 +106,6 @@ def run_simulation(Nx, Ny, params, pulse_sequence, initial_site=0):
     initial_state_list[initial_site] = qt.basis(2, 1)
     psi0 = qt.tensor(initial_state_list)
 
-    # --- Collapse operators for Lindblad evolution ---
-    c_ops = []
-    if params['mode'] == 'Lindblad':
-        Gamma_decay, Gamma_dephasing = params.get('Gamma_decay', 0), params.get('Gamma_dephasing', 0)   
-        # Decay
-        if Gamma_decay > 0:
-            for i in range(N):
-                c_ops.append(np.sqrt(Gamma_decay) * get_operator_for_site(qt.sigmam(), i, N))
-        # Dephasing
-        if Gamma_dephasing > 0:
-            for i in range(N):
-                c_ops.append(np.sqrt(Gamma_dephasing) * get_operator_for_site(n_op, i, N))
-
     # --- Expectation operators to track Rydberg population ---
     e_ops = [get_operator_for_site(n_op, i, N) for i in range(N)]
 
@@ -114,19 +119,22 @@ def run_simulation(Nx, Ny, params, pulse_sequence, initial_site=0):
     for direction, duration, steps in pbar:
         pbar.set_description(f"Pulse: {direction}")
         
-        current_delta = params['V_map'][direction] + params['delta_detuning_map'].get(direction, 0)
-        H = build_hamiltonian(Nx, Ny, params['Omega'], current_delta, params['V_map'])
+        current_delta = params['V_map'][direction] + params['delta_detuning_map'][direction]
+        H_func = lambda t, args: build_hamiltonian(
+            Nx, Ny, params['Omega'], current_delta, params['V_map']
+            )
         
         t_pulse = np.linspace(t_total, t_total + duration, steps + 1)
         
         options = {"store_final_state": True, "nsteps": 5000}  
         
         if params['mode'] == 'Schrodinger':
-            result = qt.sesolve(H, psi0, t_pulse, e_ops=e_ops, options=options)
+            result = qt.sesolve(H_func, psi0, t_pulse, e_ops=e_ops, options=options)
         else: # Lindblad
             # For mesolve, the initial state can be a state vector or density matrix
             rho0 = psi0 * psi0.dag() if psi0.isket else psi0
-            result = qt.mesolve(H, rho0, t_pulse, c_ops=c_ops, e_ops=e_ops, options=options)
+            c_ops = get_collapse_operators(N, params['Gamma_decay'], params['Gamma_dephasing'])
+            result = qt.mesolve(H_func, rho0, t_pulse, c_ops=c_ops, e_ops=e_ops, options=options)
         
         # Append results, excluding the first point which is the end of the last pulse
         time_points.extend(result.times[1:])
@@ -233,7 +241,7 @@ if __name__ == '__main__':
     # For larger systems (4x4 or bigger), use 'Schrodinger' mode to avoid memory issues
     # 'Lindblad' mode requires too much memory for systems with >12 atoms
     SIMULATION_MODE = 'Schrodinger'  # 'Schrodinger' or 'Lindblad'
-    Nx, Ny = 4, 4
+    Nx, Ny = 7, 1
     
     # Check system size and warn about memory requirements
     total_atoms = Nx * Ny
@@ -262,11 +270,11 @@ if __name__ == '__main__':
     # --- 3. Derived Parameters and Array Generation ---
     atom_coords = create_alternating_2d_array(Nx, Ny, r_h1, r_h2, r_v1, r_v2)
     V_map = {
-        'h1': C6 / r_h1**6, 'h2': C6 / r_h2**6,
+        'h1': Omega * 20, 'h2': Omega * 10,
         'v1': C6 / r_v1**6, 'v2': C6 / r_v2**6
     }
     delta_detuning_map = {
-        'h1': -0.01 * Omega, 'h2': -0.25 * Omega,
+        'h1': -0.133 * Omega, 'h2': -0.033 * Omega,
         'v1': -0 * Omega, 'v2': -0.2 * Omega
     }
     
@@ -291,19 +299,22 @@ if __name__ == '__main__':
         r_val = spacing_values[key]
         print(f"V_{key} (r={r_val*1e6:.1f} um): {val/(2*np.pi*1e6):.2f} MHz")
 
-    print(f"Estimated pi-pulse duration (h1): {pi_pulse_duration*1e6:.2f} us")
+    print(f"Estimated pi-pulse duration: {pi_pulse_duration*1e6:.2f} us")
     if SIMULATION_MODE == 'Lindblad':
         print(f"Gamma_decay: {Gamma_decay/(2*np.pi*1e3):.3f} kHz, Gamma_dephasing: {Gamma_dephasing/(2*np.pi*1e3):.3f} kHz")
 
     # --- 4. Define Transport Path and Run Simulation ---
     initial_site = 0
-    target_site = 10 # Target: site 5 (center) in a 4x4 grid
-    pulse_sequence = [
-        ('h1', pi_pulse_duration, 50),  # 0 -> 1 (horizontal)
-        ('h2', pi_pulse_duration, 50),  # 1 -> 2 (horizontal)
-        ('v1', pi_pulse_duration, 50),  # 2 -> 6 (vertical, row 0 to row 1)
-        ('v2', pi_pulse_duration, 50),  # 6 -> 10 (vertical, row 0 to row 1)
-    ]
+    target_site = 5  # 与第一个文件保持一致，目标到第6个原子
+    
+    # 模拟5个完整周期，每个周期包含2个脉冲
+    total_periods = 5
+    pulse_sequence = []
+    for period in range(total_periods):
+        pulse_sequence.extend([
+            ('h1', pi_pulse_duration, 50),  # 第一个脉冲
+            ('h2', pi_pulse_duration, 50),  # 第二个脉冲
+        ])
     
     times, history = run_simulation(Nx, Ny, params, pulse_sequence, initial_site)
 
@@ -318,7 +329,8 @@ if __name__ == '__main__':
             (initial_site, f'Initial Site ({initial_site})', 'r-'),
             (1, 'Intermediate Site (1)', 'g--'),
             (2, 'Intermediate Site (2)', 'c--'),
-            (6, 'Intermediate Site (6)', 'm--'),
+            (3, 'Intermediate Site (3)', 'm--'),
+            (4, 'Intermediate Site (4)', 'y--'),
             (target_site, f'Target Site ({target_site})', 'b-')
         ]
         plot_transport_dynamics(times, history, sites_for_plot)
