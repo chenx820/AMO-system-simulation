@@ -1,0 +1,40 @@
+{
+  "system": {
+    "default_Nx": 4,
+    "default_Ny": 4,
+    "default_Omega_MHz": 3.0,
+    "simulation_mode": "Schrodinger"
+  },
+  "physical_params": {
+    "spacing_h1_um": 11.4,
+    "spacing_h2_um": 12.8,
+    "spacing_v1_um": 10.8,
+    "spacing_v2_um": 14.2,
+    "C6_coefficient": 3e7,
+    "decay_rate_factor": 0.002,
+    "dephasing_rate_factor": 0.004
+  },
+  "detuning": {
+    "h1": -0.133,
+    "h2": -0.21,
+    "v1": -0.166,
+    "v2": -0.35
+  },
+  "optimization": {
+    "stepwise_enabled": false,
+    "delta_range": 0.3,
+    "coarse_steps": 21,
+    "fine_window": 0.05,
+    "fine_steps": 15,
+    "alternating_max_rounds": 3,
+    "convergence_eps_rel": 0.001,
+    "low_fidelity": { "periods": 1, "steps_per_pulse": 12 },
+    "mid_fidelity": { "periods": 1, "steps_per_pulse": 18 },
+    "high_fidelity": { "periods": 2, "steps_per_pulse": 24 }
+  },
+  "output_paths": {
+    "plots_dir": "outputs/plots",
+    "animations_dir": "outputs/animations",
+    "data_dir": "outputs/data"
+  }
+}

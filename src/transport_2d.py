@@ -1,8 +1,51 @@
+#!/usr/bin/env python3
+"""
+2D Transport Simulation Script
+simulate the transport of Rydberg atoms in a 2D grid
+
+Author: Chen Huang
+Date: 2025-08-22
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from tqdm import tqdm
 import qutip as qt
+import json
+import os
+
+from system_params import create_custom_system
+
+def load_config(config_path='./configs/default_params.json'):
+    """
+    load parameters from JSON config file
+    """
+    try:
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        return config
+    except FileNotFoundError:
+        print(f"Warning: 配置文件 {config_path} 未找到，使用默认参数")
+        return {
+            "system": {
+                "default_Nx": 4,
+                "default_Ny": 4,
+                "default_Omega_MHz": 3.0,
+                "simulation_mode": "Schrodinger"
+            },
+            "optimization": {
+                "stepwise_enabled": False,
+                "delta_range": 0.3,
+                "coarse_steps": 25,
+                "fine_window": 0.06,
+                "fine_steps": 21
+            },
+            "output_paths": {
+                "plots_dir": "outputs/plots",
+                "animations_dir": "outputs/animations"
+            }
+        }
 
 # define the single-atom operators
 sm = qt.destroy(2) # lowering operator |0><1|
@@ -137,17 +180,29 @@ def run_simulation(Nx, Ny, params, pulse_sequence, initial_sites=[0]):
     
     # Use tqdm for progress bar
     pbar = tqdm(pulse_sequence, desc="Simulating Pulses")
-    for direction, duration, steps in pbar:
+    for pulse in pbar:
+        # support two forms:
+        # ('h1', duration, steps)
+        # ('h1', duration, steps, delta_override)
+        if len(pulse) == 3:
+            direction, duration, steps = pulse
+            delta_override = None
+        else:
+            direction, duration, steps, delta_override = pulse
         pbar.set_description(f"Pulse: {direction}")
         
-        current_delta = params['V_map'][direction] + params['delta_detuning_map'][direction]
+        if delta_override is not None:
+            current_delta = params['V_map'][direction] + delta_override
+        else:
+            current_delta = params['V_map'][direction] + params['delta_detuning_map'][direction]
         # Pre-build Hamiltonian for this pulse to avoid repeated construction
         H_pulse = build_hamiltonian(Nx, Ny, params['Omega'], current_delta, params['V_map'])
         H_func = lambda t, args: H_pulse
         
         t_pulse = np.linspace(t_total, t_total + duration, steps + 1)
-        # Optimize solver options for 4x4 system
-        options = {"store_final_state": True, "nsteps": 1000}
+        # Use optimized solver options
+        temp_system = create_custom_system(Nx, Ny)
+        options = temp_system.get_optimized_solver_options(duration)
         
         if params['mode'] == 'Schrodinger':
             result = qt.sesolve(H_func, psi0, t_pulse, e_ops=e_ops, options=options)
@@ -352,90 +407,72 @@ def animate_transport(Nx, Ny, coords, time_points, history, filename='transport_
     plt.close()
 
 
-# --- Main Execution Block ---
-if __name__ == '__main__':
-    # --- 1. Simulation Setup ---
-    # For larger systems (4x4 or bigger), use 'Schrodinger' mode to avoid memory issues
-    # 'Lindblad' mode requires too much memory for systems with >12 atoms
-    SIMULATION_MODE = 'Schrodinger'  # 'Schrodinger' or 'Lindblad'
-    Nx, Ny = 4, 4
-    
-    # Check system size and warn about memory requirements
-    total_atoms = Nx * Ny
-    hilbert_dim = 2**total_atoms
-    if SIMULATION_MODE == 'Lindblad' and total_atoms > 12:
-        print(f"WARNING: {total_atoms} atoms = {hilbert_dim} Hilbert dimension")
-        print(f"Lindblad mode requires ~{hilbert_dim**2 * 16 / 1e9:.1f} GB memory")
-        print("Switching to Schrodinger mode to avoid memory overflow...")
-        SIMULATION_MODE = 'Schrodinger' 
-    
-    # --- 2. Physical Parameters (all in SI units) ---
-    # Spacings in meters (m)
-    r_h1, r_h2 = 11.4e-6, 12.8e-6
-    r_v1, r_v2 = 10.8e-6, 14.2e-6
+# --- Run simulation ---
+def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
+                       detuning_override: dict | None = None,
+                       initial_sites: list[int] | None = None,
+                       target_sites: list[int] | None = None,
+                       intermediate_sites: list[int] | None = None,
+                       plots_path: str = None,
+                       anim_path: str = None,
+                       config: dict = None,
+                       pulse_sequence_config: list[tuple[str, float, int]] = None,
+                       ):
 
-    # Angular frequencies in rad/s
-    Omega = 2 * np.pi * 3.0e6  # 3.0 MHz
-    Omega_eff = Omega / np.sqrt(2) # effective Rabi frequency
-    Gamma_decay = 0.002 * Omega # decay rate
-    Gamma_dephasing = 0.004 * Omega # dephasing rate
+    # Defaults
+    if initial_sites is None:
+        initial_sites = [0]
+    if target_sites is None:
+        # pick a site near opposite corner as example
+        target_sites = [Nx*Ny - 1]
+    if intermediate_sites is None:
+        intermediate_sites = []
+    if pulse_sequence_config is None:
+        pulse_sequence_config = ['h1', 'v1', 'h2', 'v2']
     
-    # van der Waals coefficient in J * m^6. We use angular frequency units (rad/s * m^6)
-    # by implicitly setting hbar=1.
-    C6 = 3e7 * Omega * (1e-6)**6 # Convert to (rad/s) * m^6
-    
-    # --- 3. Derived Parameters and Array Generation ---
-    atom_coords = create_alternating_2d_array(Nx, Ny, r_h1, r_h2, r_v1, r_v2)
-    V_map = {
-        'h1': C6 / r_h1**6, 'h2': C6 / r_h2**6,
-        'v1': C6 / r_v1**6, 'v2': C6 / r_v2**6
-    }
-    delta_detuning_map = {
-        'h1': -0.133 * Omega, 'h2': -0.033 * Omega,
-        'v1': -0.166 * Omega, 'v2': -0.016 * Omega
-    }
-    
-    pi_pulse_duration = np.pi / Omega_eff # Duration in seconds
-    
-    params = {
-        'mode': SIMULATION_MODE, 
-        'Omega': Omega, 
-        'V_map': V_map, 
-        'Gamma_decay': Gamma_decay, 
-        'Gamma_dephasing': Gamma_dephasing, 
-        'delta_detuning_map': delta_detuning_map
-    }
+    # use output paths from config (if provided)
+    if config and 'output_paths' in config:
+        output_paths = config['output_paths']
+        if plots_path is None:
+            plots_path = f"./{output_paths['plots_dir']}/transport_2d_dynamics_with_pulses.png"
+        if anim_path is None:
+            anim_path = f"./{output_paths['animations_dir']}/transport_2d_animation.mp4"
+    else:
+        # default paths
+        if plots_path is None:
+            plots_path = './outputs/plots/transport_2d_dynamics_with_pulses.png'
+        if anim_path is None:
+            anim_path = './outputs/animations/transport_2d_animation.mp4'
 
-    print("--- Simulation Parameters ---")
-    print(f"Grid: {Nx}x{Ny}, Mode: {SIMULATION_MODE}")
-    print(f"Omega: {Omega/(2*np.pi*1e6):.2f} MHz")
-    
-    # Corrected print statement logic
-    spacing_values = {'h1': r_h1, 'h2': r_h2, 'v1': r_v1, 'v2': r_v2}
-    for key, val in V_map.items():
-        r_val = spacing_values[key]
-        print(f"V_{key} (r={r_val*1e6:.1f} um): {val/(2*np.pi*1e6):.2f} MHz")
+    # 1) System parameters
+    system_params = create_custom_system(Nx, Ny, Omega_MHz=Omega_MHz)
+    if detuning_override:
+        # override provided keys only (values should be absolute in rad/s)
+        for k, v in detuning_override.items():
+            if k in system_params.delta_detuning_map:
+                system_params.delta_detuning_map[k] = v
 
-    print(f"Estimated pi-pulse duration: {pi_pulse_duration*1e6:.2f} us")
-    if SIMULATION_MODE == 'Lindblad':
-        print(f"Gamma_decay: {Gamma_decay/(2*np.pi*1e3):.3f} kHz, Gamma_dephasing: {Gamma_dephasing/(2*np.pi*1e3):.3f} kHz")
+    system_params.print_system_info()
 
-    # --- 4. Define Transport Path and Run Simulation ---
-    initial_sites = [0]
-    target_sites = [10]  
-    intermediate_sites = [1, 5, 6]
-    
-    steps_per_pulse = 50    
-    pulse_sequence = [
-        ('h1', pi_pulse_duration, steps_per_pulse),  
-        ('v1', pi_pulse_duration, steps_per_pulse),
-        ('h2', pi_pulse_duration, steps_per_pulse),  
-        ('v2', pi_pulse_duration, steps_per_pulse),  
-    ] 
-    
-    times, history = run_simulation(Nx, Ny, params, pulse_sequence, initial_sites)
+    # 2) Atom coordinates
+    atom_coords = create_alternating_2d_array(
+        system_params.Nx, system_params.Ny,
+        system_params.r_h1, system_params.r_h2,
+        system_params.r_v1, system_params.r_v2
+    )
 
-    # --- 5. Analyze and Visualize Results ---
+    # 3) Pulse sequence
+    pulse_sequence = system_params.create_pulse_sequence(pulse_sequence_config)
+
+    # 4) Run simulation
+    times, history = run_simulation(
+        system_params.Nx, system_params.Ny,
+        system_params.get_params_dict(),
+        pulse_sequence,
+        initial_sites
+    )
+
+    # 5) Results and outputs
     if history:
         final_populations = history[-1]
         print(f"\n--- Results ---")
@@ -448,14 +485,106 @@ if __name__ == '__main__':
             (intermediate_site, f'Intermediate site ({intermediate_site})', '--') for intermediate_site in intermediate_sites] + [
             (target_site, f'Target site ({target_site})', '-') for target_site in target_sites
         ]
-        # plot the transport dynamics and the pulse sequence
-        plot_transport_and_pulses(times, history, pulse_sequence, params, sites_for_plot)
-        animate_transport(Nx, Ny, atom_coords, times, history)
 
-        # the population snapshot at the middle and final time
+        plot_transport_and_pulses(times, history, pulse_sequence, 
+                                  system_params.get_params_dict(), sites_for_plot,
+                                  filename=plots_path)
+        animate_transport(system_params.Nx, system_params.Ny, atom_coords, times, history,
+                          filename=anim_path)
+
+        # snapshots
         mid_idx = len(history) // 2
-        plot_population_snapshot(history[mid_idx], Nx, Ny, t=times[mid_idx], filename='transport_2d_snapshot_mid.png')
-        plot_population_snapshot(history[-1], Nx, Ny, t=times[-1], filename='transport_2d_snapshot_final.png')
-        print("Saved population snapshots: 'transport_2d_snapshot_mid.png', 'transport_2d_snapshot_final.png'")
+        if config and 'output_paths' in config:
+            plots_dir = f"./{config['output_paths']['plots_dir']}"
+        else:
+            plots_dir = './outputs/plots'
+            
+        plot_population_snapshot(history[mid_idx], system_params.Nx, system_params.Ny, t=times[mid_idx],
+                                filename=f'{plots_dir}/transport_2d_snapshot_mid.png')
+        plot_population_snapshot(history[-1], system_params.Nx, system_params.Ny, t=times[-1],
+                                filename=f'{plots_dir}/transport_2d_snapshot_final.png')
+        print(f"Saved population snapshots: '{plots_dir}/transport_2d_snapshot_mid.png', '{plots_dir}/transport_2d_snapshot_final.png'")
     else:
         print("\nSimulation did not produce data. Check parameters.")
+
+
+# --- Main Execution Block ---
+if __name__ == '__main__':
+    # --- 1. Import and Setup System Parameters ---
+    from optimize_detuning import optimize_all_deltas_alternating, optimize_path_stepwise
+    
+    # load config
+    config = load_config()
+    
+    # load system parameters
+    Nx_default = config['system']['default_Nx']
+    Ny_default = config['system']['default_Ny']
+    Omega_MHz_default = config['system']['default_Omega_MHz'] # MHz
+    Omega = 2 * np.pi * Omega_MHz_default * 1e6
+
+    # load optimization parameters
+    opt_config = config['optimization']
+    delta_range = opt_config['delta_range']
+    coarse_steps = opt_config['coarse_steps']
+    fine_window = opt_config['fine_window']
+    fine_steps = opt_config['fine_steps']
+    stepwise_enabled = opt_config['stepwise_enabled']
+
+    # stepwise optimization (path segment)
+    stepwise_cfg = config.get('stepwise', {"enabled": stepwise_enabled, "path": [["h1",1],["v1",5],["h2",6],["v2",10]], "periods":1, "steps_per_pulse":15})
+    use_stepwise = bool(stepwise_cfg.get('enabled', True))
+    if use_stepwise:
+        print("\nRunning detuning optimization (stepwise) before transport...")
+        steps = [(d, t) for d, t in stepwise_cfg.get('path', [("h1",1),("v1",5),("h2",6),("v2",10)])]
+        pulses = optimize_path_stepwise(
+            Nx_default, Ny_default, Omega,
+            steps=steps, start_site=0,
+            periods=stepwise_cfg.get('periods', 1),
+            steps_per_pulse=stepwise_cfg.get('steps_per_pulse', 15),
+            delta_range=delta_range, coarse_steps=coarse_steps,
+            fine_window=fine_window, fine_steps=fine_steps,
+        )
+
+        # run with optimized stepwise pulses
+        system_params = create_custom_system(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default)
+        atom_coords = create_alternating_2d_array(
+            system_params.Nx, system_params.Ny,
+            system_params.r_h1, system_params.r_h2,
+            system_params.r_v1, system_params.r_v2
+        )
+
+        times, history = run_simulation(
+            system_params.Nx, system_params.Ny,
+            system_params.get_params_dict(),
+            pulses, [0]
+        )
+        if history:
+            simulate_transport(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default,
+                               detuning_override=None,
+                               config=config)
+        else:
+            print("Stepwise optimized pulses produced no data; falling back to alternating result.")
+            detuning_override = config['detuning'] * Omega
+            simulate_transport(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default,
+                               detuning_override=detuning_override,
+                               config=config)
+    else:
+        detuning_override = {}
+        for k, v in config['detuning'].items():
+            detuning_override[k] = v * Omega
+
+        print(
+            "Applying detuning from config: \n"
+            f"δ_h1 = {detuning_override['h1']/Omega:+.3f}Ω \n"
+            f"δ_h2 = {detuning_override['h2']/Omega:+.3f}Ω \n"
+            f"δ_v1 = {detuning_override['v1']/Omega:+.3f}Ω \n"
+            f"δ_v2 = {detuning_override['v2']/Omega:+.3f}Ω \n"
+        )
+
+        simulate_transport(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default,
+                           detuning_override=detuning_override,
+                           initial_sites=[0, 8],
+                           target_sites=[1, 9],
+                           intermediate_sites=[],
+                           config=config,
+                           pulse_sequence_config=['h1'])
