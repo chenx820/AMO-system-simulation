@@ -134,14 +134,18 @@ class AMOSystemParams:
         if self.total_atoms <= 16:
             return {
                 "store_final_state": True, 
-                "nsteps": 1000, 
-                "max_step": duration/100
+                "nsteps": 10000, 
+                "max_step": duration/1000,
+                "rtol": 1e-8,
+                "atol": 1e-8
             }
         else:
             return {
                 "store_final_state": True, 
-                "nsteps": 500, 
-                "max_step": duration/50
+                "nsteps": 5000, 
+                "max_step": duration/500,
+                "rtol": 1e-8,
+                "atol": 1e-8
             }
     
     def get_optimized_steps_per_pulse(self):

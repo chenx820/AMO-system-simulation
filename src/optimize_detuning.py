@@ -13,10 +13,11 @@ import argparse
 from copy import deepcopy
 import sys
 import os
-sys.path.append(os.path.dirname(__file__))
+
 from transport_2d import run_simulation
 from system_params import create_custom_system
 
+sys.path.append(os.path.dirname(__file__))
 
 def build_base_params(Nx, Ny, Omega):
     """

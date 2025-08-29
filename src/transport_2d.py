@@ -17,17 +17,16 @@ import os
 
 from system_params import create_custom_system
 
-def load_config(config_path='./configs/default_params.json'):
+def load_config(config_path='./configs/default_params.json', example_path=None):
     """
-    load parameters from JSON config file
+    load parameters from JSON config file and optionally merge with example config
     """
     try:
         with open(config_path, 'r') as f:
             config = json.load(f)
-        return config
     except FileNotFoundError:
         print(f"Warning: 配置文件 {config_path} 未找到，使用默认参数")
-        return {
+        config = {
             "system": {
                 "default_Nx": 4,
                 "default_Ny": 4,
@@ -46,6 +45,32 @@ def load_config(config_path='./configs/default_params.json'):
                 "animations_dir": "outputs/animations"
             }
         }
+    
+    # if example_path is provided, load and merge with config
+    if example_path:
+        try:
+            with open(example_path, 'r') as f:
+                example_config = json.load(f)
+            
+            # merge example config with main config
+            if 'initial_sites' in example_config:
+                config['initial_sites'] = example_config['initial_sites']
+            if 'target_sites' in example_config:
+                config['target_sites'] = example_config['target_sites']
+            if 'pulse_sequence_config' in example_config:
+                config['pulse_sequence_config'] = example_config['pulse_sequence_config']
+            
+            print(f"Loaded example config from {example_path}")
+            print(f"Initial sites: {config.get('initial_sites', 'not set')}")
+            print(f"Target sites: {config.get('target_sites', 'not set')}")
+            print(f"Pulse sequence: {config.get('pulse_sequence_config', 'not set')}")
+            
+        except FileNotFoundError:
+            print(f"Warning: example config file {example_path} not found")
+        except json.JSONDecodeError:
+            print(f"Warning: example config file {example_path} JSON format error")
+    
+    return config
 
 # define the single-atom operators
 sm = qt.destroy(2) # lowering operator |0><1|
@@ -73,7 +98,7 @@ colors = [
     "#581845",
 ]
 
-# --- Part 1: Atom Array Generation ---
+# --- Atom Array Generation ---
 def create_alternating_2d_array(Nx, Ny, r_h1, r_h2, r_v1, r_v2):
     """
     Creates coordinates for an n x n 2D atom array with alternating spacings.
@@ -93,8 +118,7 @@ def create_alternating_2d_array(Nx, Ny, r_h1, r_h2, r_v1, r_v2):
             
     return np.array(coordinates)
 
-# --- Part 2: QuTiP Operator and Hamiltonian Construction ---
-
+# --- QuTiP Operator and Hamiltonian Construction ---
 def get_operator_for_site(op, i, N):
     """
     Creates a full Hilbert space operator for a single-qubit operator 'op' acting on site 'i',
@@ -155,8 +179,7 @@ def get_collapse_operators(N, Gamma_decay_val, Gamma_dephasing_val):
         c_ops.append(np.sqrt(Gamma_dephasing_val) * get_operator_for_site(sz, k, N))
     return c_ops
 
-# --- Part 3: QuTiP-based Simulation Execution ---
-
+# --- QuTiP-based Simulation Execution ---
 def run_simulation(Nx, Ny, params, pulse_sequence, initial_sites=[0]):
     """
     Runs the time-evolution using QuTiP's sesolve (Schrödinger) or mesolve (Lindblad).
@@ -180,10 +203,10 @@ def run_simulation(Nx, Ny, params, pulse_sequence, initial_sites=[0]):
     
     # Use tqdm for progress bar
     pbar = tqdm(pulse_sequence, desc="Simulating Pulses")
-    for pulse in pbar:
+    for i, pulse in enumerate(pbar):
         # support two forms:
-        # ('h1', duration, steps)
-        # ('h1', duration, steps, delta_override)
+        # ['h1', duration, steps]
+        # ['h1', duration, steps, delta_override]
         if len(pulse) == 3:
             direction, duration, steps = pulse
             delta_override = None
@@ -214,11 +237,15 @@ def run_simulation(Nx, Ny, params, pulse_sequence, initial_sites=[0]):
         else:
             raise ValueError(f"Invalid simulation mode: {params['mode']}")
         
-        # Append results, excluding the first point which is the end of the last pulse
-        time_points.extend(result.times[1:])
-        # result.expect is a list of arrays, one for each e_op. We need to transpose it.
-        pulse_history = np.array(result.expect).T
-        history.extend(pulse_history[1:])
+        # For the first pulse, include the initial point; for subsequent pulses, exclude the first point to avoid duplication
+        if i == 0:
+            time_points.extend(result.times)
+            pulse_history = np.array(result.expect).T
+            history.extend(pulse_history)
+        else:
+            time_points.extend(result.times[1:])
+            pulse_history = np.array(result.expect).T
+            history.extend(pulse_history[1:])
 
         # The final state of this pulse is the initial state for the next
         psi0 = result.final_state
@@ -226,7 +253,7 @@ def run_simulation(Nx, Ny, params, pulse_sequence, initial_sites=[0]):
 
     return time_points, history
 
-# --- Part 4: Analysis and Visualization ---
+# --- Analysis and Visualization ---
 def plot_pulse_sequence(ax, pulse_sequence, params, t0=0.0, time_unit_scale=1e6, *, normalize_by_total=False, total_duration=None):
     """
     Plot the pulse sequence on the given axis.
@@ -250,6 +277,7 @@ def plot_pulse_sequence(ax, pulse_sequence, params, t0=0.0, time_unit_scale=1e6,
 
     ax.plot(ts, ys, linewidth=4, color=colors[0], drawstyle='steps-post', label='Laser detuning pulse sequence')
 
+    ax.set_xlim(ts[0], ts[-1])
     ax.set_yticks(list(params['V_map'].values()))
     ax.set_yticklabels(list(r'$V_{'+key+'}$' for key in params['V_map'].keys()))
 
@@ -282,10 +310,11 @@ def plot_transport_and_pulses(time_points, history, pulse_sequence, params, site
         time_x = np.array(time_points) * 1e6  # fallback: if no T, still use μs
     for i, (site_idx, label, style) in enumerate(sites_to_plot):
         ax_top.plot(time_x, hist[:, site_idx], color=colors[i % len(colors)], linestyle=style, linewidth=4, label=label)
+
     ax_top.set_ylabel('Rydberg population', fontsize=20)
     ax_top.legend(loc='best', frameon=True, ncol=1, framealpha=0.9, fontsize=20)
     ax_top.grid(True, which='both', linestyle='--', linewidth=0.8)
-    ax_top.set_xlim(0, time_x[-1] if len(time_x) > 0 else 0)
+    ax_top.set_xlim(time_x[0] if len(time_x) > 0 else 0, time_x[-1] if len(time_x) > 0 else 0)
 
     # bottom: pulse sequence (axes[1][0])
     ax_bottom = axes[1][0]
@@ -332,7 +361,7 @@ def plot_population_snapshot(pop_vec, Nx, Ny, t=None, filename='population_snaps
 
     cbar = plt.colorbar(im, ax=ax)
     cbar.ax.tick_params(direction='out', labelsize=14)  # Colorbar ticks
-    cbar.ax.set_ylabel('Rydberg population', fontsize=16)  # Colorbar label fontsize
+    cbar.ax.set_ylabel('Rydberg population', fontsize=16)  # Colorbar label
 
     ax.set_xticks(np.arange(0, Nx, 1))
     ax.set_yticks(np.arange(0, Ny, 1))
@@ -423,13 +452,10 @@ def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
     if initial_sites is None:
         initial_sites = [0]
     if target_sites is None:
-        # pick a site near opposite corner as example
-        target_sites = [Nx*Ny - 1]
+        target_sites = [1]
     if intermediate_sites is None:
         intermediate_sites = []
-    if pulse_sequence_config is None:
-        pulse_sequence_config = ['h1', 'v1', 'h2', 'v2']
-    
+
     # use output paths from config (if provided)
     if config and 'output_paths' in config:
         output_paths = config['output_paths']
@@ -462,7 +488,13 @@ def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
     )
 
     # 3) Pulse sequence
-    pulse_sequence = system_params.create_pulse_sequence(pulse_sequence_config)
+    if pulse_sequence_config and len(pulse_sequence_config) > 0:
+        if isinstance(pulse_sequence_config[0], list):
+            pulse_sequence = pulse_sequence_config
+        else:
+            pulse_sequence = system_params.create_pulse_sequence(pulse_sequence_config)
+    else:
+        raise ValueError("Pulse sequence config is not set")
 
     # 4) Run simulation
     times, history = run_simulation(
@@ -508,15 +540,13 @@ def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
         print("\nSimulation did not produce data. Check parameters.")
 
 
-# --- Main Execution Block ---
 if __name__ == '__main__':
-    # --- 1. Import and Setup System Parameters ---
     from optimize_detuning import optimize_all_deltas_alternating, optimize_path_stepwise
     
-    # load config
-    config = load_config()
+    # load config   
+    config = load_config(example_path='./examples/default.json')
     
-    # load system parameters
+    # load system parameters from config
     Nx_default = config['system']['default_Nx']
     Ny_default = config['system']['default_Ny']
     Omega_MHz_default = config['system']['default_Omega_MHz'] # MHz
@@ -529,9 +559,10 @@ if __name__ == '__main__':
     fine_window = opt_config['fine_window']
     fine_steps = opt_config['fine_steps']
     stepwise_enabled = opt_config['stepwise_enabled']
+    system_params = create_custom_system(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default)
 
     # stepwise optimization (path segment)
-    stepwise_cfg = config.get('stepwise', {"enabled": stepwise_enabled, "path": [["h1",1],["v1",5],["h2",6],["v2",10]], "periods":1, "steps_per_pulse":15})
+    stepwise_cfg = config.get('stepwise', {"enabled": stepwise_enabled, "periods":1, "steps_per_pulse":15})
     use_stepwise = bool(stepwise_cfg.get('enabled', True))
     if use_stepwise:
         print("\nRunning detuning optimization (stepwise) before transport...")
@@ -546,17 +577,21 @@ if __name__ == '__main__':
         )
 
         # run with optimized stepwise pulses
-        system_params = create_custom_system(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default)
         atom_coords = create_alternating_2d_array(
             system_params.Nx, system_params.Ny,
             system_params.r_h1, system_params.r_h2,
             system_params.r_v1, system_params.r_v2
         )
 
+        # get initial sites from config
+        initial_sites = config.get('initial_sites', [])
+        if len(initial_sites) == 0:
+            raise ValueError("Initial sites are not set")
+        
         times, history = run_simulation(
             system_params.Nx, system_params.Ny,
             system_params.get_params_dict(),
-            pulses, [0]
+            pulses, initial_sites
         )
         if history:
             simulate_transport(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default,
@@ -581,10 +616,19 @@ if __name__ == '__main__':
             f"δ_v2 = {detuning_override['v2']/Omega:+.3f}Ω \n"
         )
 
+        # 从配置中获取初始位点、目标位点和脉冲序列
+        initial_sites = config.get('initial_sites', [0])
+        target_sites = config.get('target_sites', [1])
+        pulse_sequence_config = config.get('pulse_sequence_config', [])
+
+        if len(pulse_sequence_config) > 0:
+            for pulse in pulse_sequence_config:
+                pulse[1] = pulse[1] * system_params.pi_pulse_duration
+        
         simulate_transport(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default,
                            detuning_override=detuning_override,
-                           initial_sites=[0, 8],
-                           target_sites=[1, 9],
+                           initial_sites=initial_sites,
+                           target_sites=target_sites,
                            intermediate_sites=[],
                            config=config,
-                           pulse_sequence_config=['h1'])
+                           pulse_sequence_config=pulse_sequence_config)
