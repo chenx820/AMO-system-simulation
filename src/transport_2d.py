@@ -25,7 +25,7 @@ def load_config(config_path='./configs/default_params.json', example_path=None):
         with open(config_path, 'r') as f:
             config = json.load(f)
     except FileNotFoundError:
-        print(f"Warning: 配置文件 {config_path} 未找到，使用默认参数")
+        print(f"Warning: config file {config_path} not found, using default parameters")
         config = {
             "system": {
                 "default_Nx": 4,
