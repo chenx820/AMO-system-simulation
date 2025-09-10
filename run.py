@@ -1,36 +1,38 @@
 #!/usr/bin/env python3
 """
-Simple runner script for AMO simulations
+Main script for running 2D transport simulation
 
 Usage:
-    python run.py transport    # Run 2D transport simulation
-    python run.py optimize     # Run detuning optimization
+    python run.py --Nx 4 --Ny 4 --Omega 3.0
 """
 
+import argparse
 import sys
 import os
-import subprocess
+
+# Add src directory to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python run.py [transport|optimize]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Run 2D transport simulation')
+    parser.add_argument('--Nx', type=int, default=4, help='Number of atoms in x direction')
+    parser.add_argument('--Ny', type=int, default=4, help='Number of atoms in y direction')
+    parser.add_argument('--Omega', type=float, default=3.0, help='Rabi frequency in MHz')
+    parser.add_argument('--mode', choices=['Schrodinger', 'Lindblad'], default='Schrodinger',
+                       help='Simulation mode (Schrodinger or Lindblad)')
     
-    command = sys.argv[1].lower()
+    args = parser.parse_args()
     
-    if command == "transport":
-        print("Running 2D transport simulation...")
-        subprocess.run([sys.executable, "transport_2d.py"], cwd="src")
-    elif command == "optimize":
-        print("Running detuning optimization...")
-        # Get command line arguments for optimization
-        args = sys.argv[2:] if len(sys.argv) > 2 else []
-        cmd = [sys.executable, "optimize_detuning.py"] + args
-        subprocess.run(cmd, cwd="src")
-    else:
-        print(f"Unknown command: {command}")
-        print("Available commands: transport, optimize")
-        sys.exit(1)
+    print(f"Running {args.Nx}x{args.Ny} transport simulation...")
+    print(f"Omega: {args.Omega} MHz, Mode: {args.mode}")
+    
+    # Import and run the simulation
+    import subprocess
+    import sys
+    
+    # Run the transport_2d.py script with proper path
+    cmd = [sys.executable, 'src/transport_2d.py']
+    subprocess.run(cmd, cwd=os.path.dirname(__file__))
 
 if __name__ == '__main__':
     main()
