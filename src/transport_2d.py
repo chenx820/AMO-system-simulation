@@ -13,9 +13,8 @@ import matplotlib.animation as animation
 from tqdm import tqdm
 import qutip as qt
 import json
-import os
 
-from system_params import create_custom_system
+from src.system_params import create_custom_system
 
 def load_config(config_path='./configs/default_params.json', example_path=None):
     """
@@ -25,26 +24,7 @@ def load_config(config_path='./configs/default_params.json', example_path=None):
         with open(config_path, 'r') as f:
             config = json.load(f)
     except FileNotFoundError:
-        print(f"Warning: config file {config_path} not found, using default parameters")
-        config = {
-            "system": {
-                "default_Nx": 4,
-                "default_Ny": 4,
-                "default_Omega_MHz": 3.0,
-                "simulation_mode": "Schrodinger"
-            },
-            "optimization": {
-                "stepwise_enabled": False,
-                "delta_range": 0.3,
-                "coarse_steps": 25,
-                "fine_window": 0.06,
-                "fine_steps": 21
-            },
-            "output_paths": {
-                "plots_dir": "outputs/plots",
-                "animations_dir": "outputs/animations"
-            }
-        }
+        raise ValueError(f"Warning: config file {config_path} not found, using default parameters")
     
     # if example_path is provided, load and merge with config
     if example_path:
@@ -59,11 +39,14 @@ def load_config(config_path='./configs/default_params.json', example_path=None):
                 config['target_sites'] = example_config['target_sites']
             if 'pulse_sequence_config' in example_config:
                 config['pulse_sequence_config'] = example_config['pulse_sequence_config']
+            if 'info_path' in example_config:
+                config['info_path'] = example_config['info_path']
             
             print(f"Loaded example config from {example_path}")
             print(f"Initial sites: {config.get('initial_sites', 'not set')}")
             print(f"Target sites: {config.get('target_sites', 'not set')}")
             print(f"Pulse sequence: {config.get('pulse_sequence_config', 'not set')}")
+            print(f"Info path: {config.get('info_path', 'not set')}")
             
         except FileNotFoundError:
             print(f"Warning: example config file {example_path} not found")
@@ -261,8 +244,16 @@ def plot_pulse_sequence(ax, pulse_sequence, params, t0=0.0, time_unit_scale=1e6,
     ts = []
     ys = []
     t = t0
-    for direction, duration, steps in pulse_sequence:
-        delta = params['V_map'][direction] + params['delta_detuning_map'][direction]
+    for pulse in pulse_sequence:
+        if len(pulse) == 3:
+            direction, duration, steps = pulse
+            delta_override = None
+        else:
+            direction, duration, steps, delta_override = pulse
+        if delta_override is not None:
+            delta = params['V_map'][direction] + delta_override
+        else:
+            delta = params['V_map'][direction] + params['delta_detuning_map'][direction]
         # step: stay at current value from t to t+duration
         ts.extend([t, t + duration])
         ys.extend([delta, delta])
@@ -298,8 +289,8 @@ def plot_transport_and_pulses(time_points, history, pulse_sequence, params, site
     plt.style.use('seaborn-v0_8-paper')
     fig, axes = plt.subplots(2, 1, figsize=(16, 10), sharex=True, squeeze=False)
 
-    # total duration of the pulse sequence
-    total_duration = sum(duration for _, duration, _ in pulse_sequence) if len(pulse_sequence) > 0 else None
+    # total duration of the pulse sequence (supports 3-tuple and 4-tuple pulses)
+    total_duration = sum((p[1] for p in pulse_sequence)) if len(pulse_sequence) > 0 else None
 
     # top: dynamics (x-axis: t/T)
     ax_top = axes[0][0]
@@ -489,9 +480,12 @@ def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
 
     # 3) Pulse sequence
     if pulse_sequence_config and len(pulse_sequence_config) > 0:
-        if isinstance(pulse_sequence_config[0], list):
+        first_item = pulse_sequence_config[0]
+        # If already a concrete pulse list like [('h1', duration, steps) or (..., delta_override)] use directly
+        if isinstance(first_item, (list, tuple)) and len(first_item) in (3, 4) and isinstance(first_item[0], str):
             pulse_sequence = pulse_sequence_config
         else:
+            # Otherwise, treat as high-level spec and build using system params
             pulse_sequence = system_params.create_pulse_sequence(pulse_sequence_config)
     else:
         raise ValueError("Pulse sequence config is not set")
@@ -540,47 +534,60 @@ def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
         print("\nSimulation did not produce data. Check parameters.")
 
 
-if __name__ == '__main__':
-    from optimize_detuning import optimize_all_deltas_alternating, optimize_path_stepwise
-    
-    # load config   
-    config = load_config(example_path='./examples/default.json')
+def run_tranport_2d(path):
+    from src.optimize_detuning import optimize_path_stepwise
+
+    # load config
+    if path:
+        config = load_config(example_path=path)
+    else:
+        raise ValueError("Path to example JSON is not set")
     
     # load system parameters from config
-    Nx_default = config['system']['default_Nx']
-    Ny_default = config['system']['default_Ny']
-    Omega_MHz_default = config['system']['default_Omega_MHz'] # MHz
+    Nx = config['system']['Nx']
+    Ny = config['system']['Ny']
+    Omega_MHz_default = config['system']['Omega_MHz'] # MHz
     Omega = 2 * np.pi * Omega_MHz_default * 1e6
+
+    # get initial sites, target sites, and pulse sequence from config
+    initial_sites = config.get('initial_sites', [0])
+    target_sites = config.get('target_sites', [1])
+    intermediate_sites = config.get('info_path', [])
+    pulse_sequence_config = config.get('pulse_sequence_config', [])
+    optimization = config.get('optimization', False)
 
     # load optimization parameters
     opt_config = config['optimization']
-    delta_range = opt_config['delta_range']
-    coarse_steps = opt_config['coarse_steps']
-    fine_window = opt_config['fine_window']
-    fine_steps = opt_config['fine_steps']
-    stepwise_enabled = opt_config['stepwise_enabled']
-    system_params = create_custom_system(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default)
+    
+    system_params = create_custom_system(Nx, Ny, Omega_MHz=Omega_MHz_default)
 
-    # stepwise optimization (path segment)
-    stepwise_cfg = config.get('stepwise', {"enabled": stepwise_enabled, "periods":1, "steps_per_pulse":15})
-    use_stepwise = bool(stepwise_cfg.get('enabled', True))
-    if use_stepwise:
-        print("\nRunning detuning optimization (stepwise) before transport...")
-        steps = [(d, t) for d, t in stepwise_cfg.get('path', [("h1",1),("v1",5),("h2",6),("v2",10)])]
+    if optimization:
+        print("\nRunning detuning optimization before transport...")
+
+        delta_range = opt_config['delta_range']
+        coarse_steps = opt_config['coarse_steps']
+        fine_window = opt_config['fine_window']
+        fine_steps = opt_config['fine_steps']
+
+        # direction sequence
+        directions = []
+        for item in pulse_sequence_config:
+            # item can be ['h1', 1, 25] or ('h1', 1, 25)
+            directions.append(item[0] if isinstance(item, (list, tuple)) else item)
+
+        # target sequence: all intermediate points are maximized sequentially, the last one is the final target
+        targets_chain = list(intermediate_sites) + [target_sites[0]]
+        # steps: (direction, target_site)
+        steps = list(zip(directions, targets_chain))
+
         pulses = optimize_path_stepwise(
-            Nx_default, Ny_default, Omega,
-            steps=steps, start_site=0,
-            periods=stepwise_cfg.get('periods', 1),
-            steps_per_pulse=stepwise_cfg.get('steps_per_pulse', 15),
+            Nx, Ny, Omega,
+            steps=steps, 
+            start_site=initial_sites[0],
+            periods=opt_config.get('periods', 1),
+            steps_per_pulse=opt_config.get('steps_per_pulse', 25),
             delta_range=delta_range, coarse_steps=coarse_steps,
             fine_window=fine_window, fine_steps=fine_steps,
-        )
-
-        # run with optimized stepwise pulses
-        atom_coords = create_alternating_2d_array(
-            system_params.Nx, system_params.Ny,
-            system_params.r_h1, system_params.r_h2,
-            system_params.r_v1, system_params.r_v2
         )
 
         # get initial sites from config
@@ -594,15 +601,26 @@ if __name__ == '__main__':
             pulses, initial_sites
         )
         if history:
-            simulate_transport(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default,
+            simulate_transport(Nx, Ny, Omega_MHz=Omega_MHz_default,
                                detuning_override=None,
-                               config=config)
+                               initial_sites=initial_sites,
+                               target_sites=target_sites,
+                               intermediate_sites=intermediate_sites,
+                               config=config,
+                               pulse_sequence_config=pulses)
         else:
             print("Stepwise optimized pulses produced no data; falling back to alternating result.")
-            detuning_override = config['detuning'] * Omega
-            simulate_transport(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default,
-                               detuning_override=detuning_override,
-                               config=config)
+            detuning_override = {k: v * Omega for k, v in config['detuning'].items()}
+            simulate_transport(
+                Nx, Ny, Omega_MHz=Omega_MHz_default, 
+                detuning_override=detuning_override, 
+                initial_sites=initial_sites,
+                target_sites=target_sites,
+                intermediate_sites=intermediate_sites,
+                config=config,
+                pulse_sequence_config=pulse_sequence_config
+                )
+
     else:
         detuning_override = {}
         for k, v in config['detuning'].items():
@@ -616,19 +634,16 @@ if __name__ == '__main__':
             f"δ_v2 = {detuning_override['v2']/Omega:+.3f}Ω \n"
         )
 
-        # 从配置中获取初始位点、目标位点和脉冲序列
-        initial_sites = config.get('initial_sites', [0])
-        target_sites = config.get('target_sites', [1])
-        pulse_sequence_config = config.get('pulse_sequence_config', [])
-
         if len(pulse_sequence_config) > 0:
             for pulse in pulse_sequence_config:
                 pulse[1] = pulse[1] * system_params.pi_pulse_duration
         
-        simulate_transport(Nx_default, Ny_default, Omega_MHz=Omega_MHz_default,
-                           detuning_override=detuning_override,
-                           initial_sites=initial_sites,
-                           target_sites=target_sites,
-                           intermediate_sites=[],
-                           config=config,
-                           pulse_sequence_config=pulse_sequence_config)
+        simulate_transport(
+            Nx, Ny, Omega_MHz=Omega_MHz_default,
+            detuning_override=detuning_override,
+            initial_sites=initial_sites,
+            target_sites=target_sites,
+            intermediate_sites=intermediate_sites,
+            config=config,
+            pulse_sequence_config=pulse_sequence_config
+            )

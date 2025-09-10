@@ -11,13 +11,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 from copy import deepcopy
-import sys
-import os
 
-from transport_2d import run_simulation
-from system_params import create_custom_system
+from src.transport_2d import run_simulation
+from src.system_params import create_custom_system
 
-sys.path.append(os.path.dirname(__file__))
 
 def build_base_params(Nx, Ny, Omega):
     """

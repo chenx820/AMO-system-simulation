@@ -1,8 +1,8 @@
 {
   "system": {
-    "default_Nx": 4,
-    "default_Ny": 4,
-    "default_Omega_MHz": 3.0,
+    "Nx": 4,
+    "Ny": 4,
+    "Omega_MHz": 3.0,
     "simulation_mode": "Schrodinger"
   },
   "physical_params": {
@@ -21,7 +21,6 @@
     "v2": -0.35
   },
   "optimization": {
-    "stepwise_enabled": false,
     "delta_range": 0.3,
     "coarse_steps": 21,
     "fine_window": 0.05,
