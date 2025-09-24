@@ -1,7 +1,7 @@
 {
   "system": {
-    "Nx": 4,
-    "Ny": 4,
+    "Nx": 2,
+    "Ny": 2,
     "Omega_MHz": 3.0,
     "simulation_mode": "Schrodinger"
   },
@@ -18,7 +18,7 @@
     "h1": -0.133,
     "h2": -0.21,
     "v1": -0.166,
-    "v2": -0.35
+    "v2": -0.24
   },
   "optimization": {
     "delta_range": 0.3,

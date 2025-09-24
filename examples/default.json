@@ -1,11 +1,11 @@
 {
   "config_path": "./configs/default_params.json",
   "initial_sites": [0],
-  "target_sites": [2],
-  "info_path": [1],
+  "target_sites": [3],
+  "info_path": [1, 2],
   "pulse_sequence_config": [
     ["h1", 1, 25],
-    ["h2", 1, 25]
+    ["v1", 1, 25]
   ],
   "optimization": true
 }

@@ -13,6 +13,7 @@ import matplotlib.animation as animation
 from tqdm import tqdm
 import qutip as qt
 import json
+import os
 
 from src.system_params import create_custom_system
 
@@ -185,6 +186,7 @@ def run_simulation(Nx, Ny, params, pulse_sequence, initial_sites=[0]):
     t_total = 0.0
     
     # Use tqdm for progress bar
+    print(pulse_sequence)
     pbar = tqdm(pulse_sequence, desc="Simulating Pulses")
     for i, pulse in enumerate(pbar):
         # support two forms:
@@ -447,6 +449,11 @@ def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
     if intermediate_sites is None:
         intermediate_sites = []
 
+    # helper to append suffix before file extension
+    def add_suffix_before_ext(path: str, suffix: str) -> str:
+        base, ext = os.path.splitext(path)
+        return f"{base}{suffix}{ext}"
+
     # use output paths from config (if provided)
     if config and 'output_paths' in config:
         output_paths = config['output_paths']
@@ -460,6 +467,11 @@ def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
             plots_path = './outputs/plots/transport_2d_dynamics_with_pulses.png'
         if anim_path is None:
             anim_path = './outputs/animations/transport_2d_animation.mp4'
+
+    # append size suffix to filenames
+    size_suffix = f"_{Nx}x{Ny}"
+    plots_path = add_suffix_before_ext(plots_path, size_suffix)
+    anim_path = add_suffix_before_ext(anim_path, size_suffix)
 
     # 1) System parameters
     system_params = create_custom_system(Nx, Ny, Omega_MHz=Omega_MHz)
@@ -519,17 +531,17 @@ def simulate_transport(Nx: int, Ny: int, Omega_MHz: float = 3.0, *,
                           filename=anim_path)
 
         # snapshots
-        mid_idx = len(history) // 2
         if config and 'output_paths' in config:
             plots_dir = f"./{config['output_paths']['plots_dir']}"
         else:
             plots_dir = './outputs/plots'
             
-        plot_population_snapshot(history[mid_idx], system_params.Nx, system_params.Ny, t=times[mid_idx],
-                                filename=f'{plots_dir}/transport_2d_snapshot_mid.png')
+
+        final_path = add_suffix_before_ext(f'{plots_dir}/transport_2d_snapshot_final.png', size_suffix)
+
         plot_population_snapshot(history[-1], system_params.Nx, system_params.Ny, t=times[-1],
-                                filename=f'{plots_dir}/transport_2d_snapshot_final.png')
-        print(f"Saved population snapshots: '{plots_dir}/transport_2d_snapshot_mid.png', '{plots_dir}/transport_2d_snapshot_final.png'")
+                                filename=final_path)
+        print(f"Saved population snapshots: '{final_path}'")
     else:
         print("\nSimulation did not produce data. Check parameters.")
 
@@ -577,6 +589,14 @@ def run_tranport_2d(path):
 
         # target sequence: all intermediate points are maximized sequentially, the last one is the final target
         targets_chain = list(intermediate_sites) + [target_sites[0]]
+        # normalize targets_chain length to match directions
+        if len(targets_chain) == 0:
+            targets_chain = [target_sites[0]] * len(directions)
+        elif len(targets_chain) < len(directions):
+            targets_chain = targets_chain + [targets_chain[-1]] * (len(directions) - len(targets_chain))
+        elif len(targets_chain) > len(directions):
+            targets_chain = targets_chain[:len(directions)]
+
         # steps: (direction, target_site)
         steps = list(zip(directions, targets_chain))
 
