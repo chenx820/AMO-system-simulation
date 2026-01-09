@@ -1,5 +1,13 @@
 {
   "config_path": "./configs/default_params.json",
+  "N1": 5,
+  "N2": 5,
+  "L1": 10.8,
+  "L2": 12.8,
+  "L3": 11.4,
+  "THETA1_DEG": 180.0,
+  "THETA2_DEG": -70.0,
+  "THETA3_DEG": 60.0,
   "initial_sites": [0],
   "target_sites": [3],
   "info_path": [1, 2],
